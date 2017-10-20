@@ -198,15 +198,15 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  double ref_vel = 49.5;
+  h.onMessage([&ref_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     //auto sdata = string(data).substr(0, length);
     //cout << sdata << endl;
-    int lane = 1;
-    double ref_vel = 35.;
+    int lane = 0;
     if (length && length > 2 && data[0] == '4' && data[1] == '2') {
 
       auto s = hasData(data);
@@ -238,6 +238,30 @@ int main() {
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
             int prev_size = previous_path_x.size();
+
+            if(prev_size > 0) {
+              car_s = end_path_s;
+            }
+            bool too_close = false;
+            for(int i = 0; i < sensor_fusion.size(); i++) {
+              // car is in my lane
+              float d = sensor_fusion[i][6]; // why 6?
+              if((d < 2. + 4. * lane + 2) && d > (2. + 4. * lane-2)) {
+                double vx = sensor_fusion[i][3];
+                double vy = sensor_fusion[i][4];
+                double check_speed = sqrt(vx*vx+vy*vy);
+                double check_car_s = sensor_fusion[i][5];
+                // predict where car will be
+                //check_car_s += ((double)prev_size*0.2*check_speed);
+                double d_ahead = check_car_s - car_s;
+                cout << "car ahead " << d_ahead << " meters." << endl;
+                if( d_ahead > 0 && d_ahead <30) {
+
+                  ref_vel -= 0.3; //mph
+                }
+              }
+            }
+
           	json msgJson;
 
             vector<double> ptsx;
@@ -253,11 +277,11 @@ int main() {
                 //ptsx.push_back(car_x);
                 //ptsy.push_back(prev_car_y);
                 //ptsy.push_back(car_y);
-                cout << "car_x: " << car_x;
-                cout << " prev_car_x: " << prev_car_x;
-                cout << "car_y: " << car_y;
-                cout << " prev_car_y: " << prev_car_y;
-                cout << "car_yaw: " << ref_yaw;
+                // cout << " prev_car_x: " << prev_car_x;
+                // cout << "car_y: " << car_y;
+                // cout << "car_x: " << car_x;
+                // cout << " prev_car_y: " << prev_car_y;
+                // cout << "car_yaw: " << ref_yaw;
             } else {
                 // redefine reference state as previous path end point
                 ref_x = previous_path_x[prev_size-1];
@@ -271,7 +295,6 @@ int main() {
                 //ptsy.push_back(ref_y_prev);
             }
 
-            // note: I don't really like this because it includes points between waypoints
             int nextWp = NextWaypoint(car_x,car_y,car_yaw,map_waypoints_x,map_waypoints_y);
             for(int i = nextWp-5; i < nextWp+5; i++ ) {
 
@@ -314,8 +337,9 @@ int main() {
             double x_add_on = 0;
 
             // fill the rest of the path planner
+            const double mph_to_m_s = 0.44704;
             for(int i = -30; i <= 50/*-previous_path_x.size()*/; i++) {
-              double N = target_dist/(.02*ref_vel/2.24);
+              double N = target_dist/(.02*ref_vel*mph_to_m_s);
               double x_point = x_add_on+target_x/N;
               double y_point = s(x_point);
               x_add_on = x_point;
