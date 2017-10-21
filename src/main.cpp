@@ -16,6 +16,8 @@ using namespace std;
 // for convenience
 using json = nlohmann::json;
 
+const double mph_to_m_s = 0.44704;
+
 
 // structs, because they're easier to debug than vectors
 struct Point {
@@ -183,15 +185,26 @@ class SmoothTrack {
   tk::spline s_to_y;
   tk::spline s_to_dx;
   tk::spline s_to_dy;
+  double max_s;
 public:
-  void init(vector<double> s, vector<double> x, vector<double> y, vector<double> dx, vector<double> dy) {
+  void init(
+      vector<double> s,
+      vector<double> x,
+      vector<double> y,
+      vector<double> dx,
+      vector<double> dy,
+      double _max_s)
+  {
     s_to_x.set_points(s,x);
     s_to_y.set_points(s,y);
     s_to_dx.set_points(s,dx);
     s_to_dy.set_points(s,dy);
+    max_s = _max_s;
   }
+
   Point get_point(double s, double d=0) {
     Point p;
+    s = fmod(s,max_s);
     p.x = s_to_x(s) + d * s_to_dx(s);
     p.y = s_to_y(s) + d * s_to_dy(s);
     return p;
@@ -245,7 +258,7 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  smooth_track.init(map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy);
+  smooth_track.init(map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy, max_s);
 
   double ref_vel = 0.0;
   int lane = 1;
@@ -274,7 +287,8 @@ int main() {
           	double car_s = j[1]["s"];
           	double car_d = j[1]["d"];
           	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+            double car_speed_mph = j[1]["speed"];
+            double car_speed_m_s = car_speed_mph * mph_to_m_s;
 
           	// Previous path data given to the Planner
           	auto previous_path_x = j[1]["previous_path_x"];
@@ -287,6 +301,7 @@ int main() {
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
             bool too_close = false;
+            double car_ahead_speed;
             for(int i = 0; i < sensor_fusion.size(); i++) {
               // car is in my lane
               float d = sensor_fusion[i][6]; // why 6?
@@ -301,24 +316,29 @@ int main() {
                 //cout << "car ahead " << d_ahead << " meters." << endl;
                 if( d_ahead > 0 && d_ahead <30) {
                   too_close = true;
+                  car_ahead_speed = check_speed;
                 }
               }
             }
 
-            double speed_limit = 45.0;
+            double speed_limit = 190.0;
+
+            cout << "car_s: " << car_s << endl;
 
             if(too_close) {
-              cout << "too close, slowing down" << endl;
-              ref_vel -= 0.225;
+              if(car_ahead_speed < car_speed_mph * mph_to_m_s) {
+                cout << "too close, slowing down" << endl;
+                ref_vel -= 0.45;
+              }
             } else {
-              cout << "not too close" << endl;
-              ref_vel += 0.225;
+              ref_vel += 0.45;
             }
 
             if(ref_vel > speed_limit) {
               ref_vel = speed_limit;
             }
 
+            /*
             if(too_close ) {
               if(lane>0) {
                 lane--;
@@ -326,6 +346,7 @@ int main() {
                 lane++;
               }
             }
+            */
 
             // remove path points already visited
             while(path.size() > previous_path_x.size()) {
@@ -336,16 +357,15 @@ int main() {
             if(path.size() == 0) {
               CarState car;
               car.s = car_s;
-              car.d = car_d;
-              Point p = smooth_track.get_point(car_s, car_d);
+              car.d = 2+4.*lane;//car_d;
+              Point p = smooth_track.get_point(car.s, car.d);
               car.x = p.x;
               car.y = p.y;
-              car.speed = car_speed;
+              car.speed = car_speed_mph;
               car.acceleration_s = 0;
               path.push_back(car);
             }
 
-            const double mph_to_m_s = 0.44704;
             vector<double> next_x_vals, next_y_vals;
 
             double dt = 0.02;
@@ -353,6 +373,7 @@ int main() {
             CarState car_state = path[path.size()-1];
             while(path.size() < number_of_points_to_send) {
               car_state.s += 0.02 * ref_vel * mph_to_m_s;
+              car_state.d = 2+4.*lane;
               Point p = smooth_track.get_point(car_state.s, car_state.d);
               car_state.x = p.x;
               car_state.y = p.y;
