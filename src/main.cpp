@@ -233,6 +233,13 @@ public:
     p.y = s_to_y(s) + d * s_to_dy(s);
     return p;
   }
+
+
+  Frenet get_frenet(double approx_s, double approx_d, double x, double y) {
+      // since there are many solutions, we start with approx_s, approx_d
+      Point next = get_point(approx_s+0.1,approx_d);
+      Point prev = get_point(approx_s-0.1,approx_d);
+  }
 };
 
 SmoothTrack smooth_track;
@@ -444,17 +451,17 @@ int main() {
             cout << "car_s: " << car_s << endl;
 
             double min_front_gap = 20;
-            double min_back_gap = 10;
+            double min_back_gap = 15;
 
             bool too_close = lane_status[lane].closest_d_ahead < min_front_gap;
 
             if(too_close) {
               if(car_ahead_speed_m_s < car_speed_mph * mph_to_m_s) {
                 cout << "too close, slowing down" << endl;
-                ref_vel -= 0.45;
+                ref_vel -= 0.225;
               }
             } else {
-              ref_vel += 0.45;
+              ref_vel += 0.225;
             }
 
             if(ref_vel > speed_limit) {
@@ -520,7 +527,7 @@ int main() {
                 path.push_back(car_state);
               }
             } else {
-              double seconds = 2;
+              double seconds = 3;
               Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
               for(double t = dt; t<=seconds; t+= dt) {
                 car_state.s += dt * ref_vel * mph_to_m_s;
