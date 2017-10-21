@@ -436,14 +436,17 @@ int main() {
 
             for(int i=0;i<3;i++) {
               LaneStatus & s = lane_status[i];
-              cout << "L" << i << " (" << s.closest_d_ahead << ", " << s.closest_d_behind << ") ";
+              cout << "L" << i << " (" << std::fixed << std::setprecision(1) << std::setw(5)<< s.closest_d_ahead << ", " << s.closest_d_behind << ") ";
             }
             cout << endl;
 
-            double speed_limit = 45.0;
+            double speed_limit = 46.0;
             cout << "car_s: " << car_s << endl;
 
-            bool too_close = lane_status[lane].closest_d_ahead < 30;
+            double min_front_gap = 20;
+            double min_back_gap = 10;
+
+            bool too_close = lane_status[lane].closest_d_ahead < min_front_gap;
 
             if(too_close) {
               if(car_ahead_speed_m_s < car_speed_mph * mph_to_m_s) {
@@ -458,12 +461,11 @@ int main() {
               ref_vel = speed_limit;
             }
 
-            double min_front_gap = 30;
 
             bool right_lane_available = false;
             if(lane < 2) {
               LaneStatus & r = lane_status[lane+1];
-              if(r.closest_d_ahead > min_front_gap && r.closest_d_behind < -20) {
+              if(r.closest_d_ahead > min_front_gap && r.closest_d_behind < -min_back_gap) {
                 right_lane_available = true;
               }
             }
@@ -471,7 +473,7 @@ int main() {
             bool left_lane_available = false;
             if(lane > 0) {
               LaneStatus & l = lane_status[lane-1];
-              if(l.closest_d_ahead > min_front_gap && l.closest_d_behind < -20) {
+              if(l.closest_d_ahead > min_front_gap && l.closest_d_behind < -min_back_gap) {
                 left_lane_available = true;
               }
             }
