@@ -11,6 +11,12 @@
 #include "spline.h"
 #include "math.h"
 
+#include "Eigen-3.3/Eigen/Dense"
+
+using namespace std;
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
+
 using namespace std;
 
 // for convenience
@@ -195,10 +201,28 @@ public:
       vector<double> dy,
       double _max_s)
   {
-    s_to_x.set_points(s,x);
-    s_to_y.set_points(s,y);
-    s_to_dx.set_points(s,dx);
-    s_to_dy.set_points(s,dy);
+    vector<double> s_,x_,y_,dx_,dy_;
+
+    // add elements to make a smooth loop.
+    s_=s;
+    x_=x;
+    y_=y;
+    dx_=dx;
+    dy_=dy;
+    s_.push_back(_max_s + s[0]);
+    s_.push_back(_max_s + s[1]);
+    x_.push_back(x[0]);
+    x_.push_back(x[1]);
+    y_.push_back(y[0]);
+    y_.push_back(y[1]);
+    dx_.push_back(dx[0]);
+    dx_.push_back(dx[1]);
+    dy_.push_back(dy[0]);
+    dy_.push_back(dy[1]);
+    s_to_x.set_points(s_,x_);
+    s_to_y.set_points(s_,y_);
+    s_to_dx.set_points(s_,dx_);
+    s_to_dy.set_points(s_,dy_);
     max_s = _max_s;
   }
 
@@ -219,9 +243,101 @@ struct CarState {
   double x,y,s,d,speed,acceleration_s, acceleration_d,sequence;
 };
 
+struct FusionCar {
+  double x,y,vx,vy,s,d,speed_m_s;
+  int id,lane;
+   FusionCar(json::reference j) {
+     id=j[0];
+     x=j[1];
+     y=j[2];
+     vx=j[3];
+     vy=j[4];
+     s=j[5];
+     d=j[6];
+     speed_m_s = sqrt(vx*vx+vy*vy);
+     lane=int(d)/4;
+   }
+};
+
 vector<CarState> path;
 
+struct LaneStatus{
+  double closest_d_ahead = 999;
+  double v_ahead = 999;
+  double v_behind = 0;
+  double closest_d_behind = -999;
+};
+
+class Polynomial {
+public:
+  vector<double> coefs;
+  Polynomial(vector<double>coefs_) {
+    coefs = coefs_;
+  }
+
+  double eval(double t) {
+    double rv = 0;
+    for(int i = 0; i < coefs.size(); ++i) {
+      rv += coefs[i]*pow(t,i);
+    }
+    return rv;
+  }
+
+};
+
+vector<double> jerk_minimizing_trajectory(vector< double> start, vector <double> end, double T)
+{
+    /*
+    Calculate the Jerk Minimizing Trajectory that connects the initial state
+    to the final state in time T.
+
+    INPUTS
+
+    start - the vehicles start location given as a length three array
+        corresponding to initial values of [s, s_dot, s_double_dot]
+
+    end   - the desired end state for vehicle. Like "start" this is a
+        length three array.
+
+    T     - The duration, in seconds, over which this maneuver should occur.
+
+    OUTPUT
+    an array of length 6, each value corresponding to a coefficent in the polynomial
+    s(t) = a_0 + a_1 * t + a_2 * t**2 + a_3 * t**3 + a_4 * t**4 + a_5 * t**5
+
+    EXAMPLE
+
+    > JMT( [0, 10, 0], [10, 10, 0], 1)
+    [0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
+    */
+
+    MatrixXd A = MatrixXd(3, 3);
+  A << T*T*T, T*T*T*T, T*T*T*T*T,
+          3*T*T, 4*T*T*T,5*T*T*T*T,
+          6*T, 12*T*T, 20*T*T*T;
+
+  MatrixXd B = MatrixXd(3,1);
+  B << end[0]-(start[0]+start[1]*T+.5*start[2]*T*T),
+          end[1]-(start[1]+start[2]*T),
+          end[2]-start[2];
+
+  MatrixXd Ai = A.inverse();
+
+  MatrixXd C = Ai*B;
+
+  vector <double> result = {start[0], start[1], .5*start[2]};
+  for(int i = 0; i < C.size(); i++)
+  {
+      result.push_back(C.data()[i]);
+  }
+
+    return result;
+
+}
+
+
 int main() {
+
   uWS::Hub h;
 
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
@@ -300,33 +416,37 @@ int main() {
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
-            bool too_close = false;
-            double car_ahead_speed;
+
+            LaneStatus lane_status[3];
+
+            double car_ahead_speed_m_s;
             for(int i = 0; i < sensor_fusion.size(); i++) {
-              // car is in my lane
-              float d = sensor_fusion[i][6]; // why 6?
-              if((d < 2. + 4. * lane + 2) && d > (2. + 4. * lane-2)) {
-                double vx = sensor_fusion[i][3];
-                double vy = sensor_fusion[i][4];
-                double check_speed = sqrt(vx*vx+vy*vy);
-                double check_car_s = sensor_fusion[i][5];
-                // predict where car will be
-                //check_car_s += ((double)prev_size*0.2*check_speed);
-                double d_ahead = check_car_s - car_s;
-                //cout << "car ahead " << d_ahead << " meters." << endl;
-                if( d_ahead > 0 && d_ahead <30) {
-                  too_close = true;
-                  car_ahead_speed = check_speed;
-                }
+              FusionCar check_car(sensor_fusion[i]);
+              LaneStatus & check_lane = lane_status [check_car.lane];
+              double d_ahead = check_car.s - car_s;
+              if(d_ahead > 0 && d_ahead < check_lane.closest_d_ahead) {
+                check_lane.closest_d_ahead = d_ahead;
+                check_lane.v_ahead = check_car.speed_m_s;
+              }
+              if(d_ahead < 0 && d_ahead > check_lane.closest_d_behind) {
+                check_lane.closest_d_behind = d_ahead;
+                check_lane.v_behind = check_car.speed_m_s;
               }
             }
 
-            double speed_limit = 190.0;
+            for(int i=0;i<3;i++) {
+              LaneStatus & s = lane_status[i];
+              cout << "L" << i << " (" << s.closest_d_ahead << ", " << s.closest_d_behind << ") ";
+            }
+            cout << endl;
 
+            double speed_limit = 45.0;
             cout << "car_s: " << car_s << endl;
 
+            bool too_close = lane_status[lane].closest_d_ahead < 30;
+
             if(too_close) {
-              if(car_ahead_speed < car_speed_mph * mph_to_m_s) {
+              if(car_ahead_speed_m_s < car_speed_mph * mph_to_m_s) {
                 cout << "too close, slowing down" << endl;
                 ref_vel -= 0.45;
               }
@@ -338,15 +458,32 @@ int main() {
               ref_vel = speed_limit;
             }
 
-            /*
-            if(too_close ) {
-              if(lane>0) {
-                lane--;
-              } else {
-                lane++;
+            double min_front_gap = 30;
+
+            bool right_lane_available = false;
+            if(lane < 2) {
+              LaneStatus & r = lane_status[lane+1];
+              if(r.closest_d_ahead > min_front_gap && r.closest_d_behind < -20) {
+                right_lane_available = true;
               }
             }
-            */
+
+            bool left_lane_available = false;
+            if(lane > 0) {
+              LaneStatus & l = lane_status[lane-1];
+              if(l.closest_d_ahead > min_front_gap && l.closest_d_behind < -20) {
+                left_lane_available = true;
+              }
+            }
+
+            double lane_delta = 0;
+            if(too_close) {
+              if(right_lane_available) {
+                lane_delta = 1;
+              } else if ( left_lane_available) {
+                lane_delta = -1;
+              }
+            }
 
             // remove path points already visited
             while(path.size() > previous_path_x.size()) {
@@ -371,13 +508,28 @@ int main() {
             double dt = 0.02;
             const int number_of_points_to_send = 20;
             CarState car_state = path[path.size()-1];
-            while(path.size() < number_of_points_to_send) {
-              car_state.s += 0.02 * ref_vel * mph_to_m_s;
-              car_state.d = 2+4.*lane;
-              Point p = smooth_track.get_point(car_state.s, car_state.d);
-              car_state.x = p.x;
-              car_state.y = p.y;
-              path.push_back(car_state);
+            if(lane_delta == 0) {
+              while(path.size() < number_of_points_to_send) {
+                car_state.s += 0.02 * ref_vel * mph_to_m_s;
+                car_state.d = 2+4.*lane;
+                Point p = smooth_track.get_point(car_state.s, car_state.d);
+                car_state.x = p.x;
+                car_state.y = p.y;
+                path.push_back(car_state);
+              }
+            } else {
+              double seconds = 2;
+              Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
+              for(double t = dt; t<=seconds; t+= dt) {
+                car_state.s += dt * ref_vel * mph_to_m_s;
+                car_state.d = trajectory.eval(t);
+                Point p = smooth_track.get_point(car_state.s, car_state.d);
+                car_state.x = p.x;
+                car_state.y = p.y;
+                path.push_back(car_state);
+              }
+              lane += lane_delta;
+
             }
 
             for(CarState & car : path) {
