@@ -16,7 +16,23 @@ using namespace std;
 // for convenience
 using json = nlohmann::json;
 
+
+// structs, because they're easier to debug than vectors
+struct Point {
+  Point(double x=NAN, double y=NAN):x(x),y(y){}
+  double x = NAN;
+  double y = NAN;
+};
+
+struct Frenet {
+  Frenet(double s, double d): s(s), d(d) {}
+  double s = NAN;
+  double d = NAN;
+};
+
+
 // For converting back and forth between radians and degrees.
+
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
@@ -85,7 +101,7 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 }
 
 // Transform from Cartesian x,y coordinates to Frenet s,d coordinates
-vector<double> getFrenet(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
+Frenet getFrenet(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
 {
 	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y);
 
@@ -129,12 +145,12 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 
 	frenet_s += distance(0,0,proj_x,proj_y);
 
-	return {frenet_s,frenet_d};
+  return Frenet(frenet_s,frenet_d);
 
 }
 
 // Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
+Point getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
 {
 	int prev_wp = -1;
 
@@ -157,9 +173,40 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 	double x = seg_x + d*cos(perp_heading);
 	double y = seg_y + d*sin(perp_heading);
 
-	return {x,y};
+  return Point(x,y);
 
 }
+
+
+class SmoothTrack {
+  tk::spline s_to_x;
+  tk::spline s_to_y;
+  tk::spline s_to_dx;
+  tk::spline s_to_dy;
+public:
+  void init(vector<double> s, vector<double> x, vector<double> y, vector<double> dx, vector<double> dy) {
+    s_to_x.set_points(s,x);
+    s_to_y.set_points(s,y);
+    s_to_dx.set_points(s,dx);
+    s_to_dy.set_points(s,dy);
+  }
+  Point get_point(double s, double d=0) {
+    Point p;
+    p.x = s_to_x(s) + d * s_to_dx(s);
+    p.y = s_to_y(s) + d * s_to_dy(s);
+    return p;
+  }
+};
+
+SmoothTrack smooth_track;
+double last_s_sent = NAN;
+
+
+struct CarState {
+  double x,y,s,d,speed,acceleration_s, acceleration_d,sequence;
+};
+
+vector<CarState> path;
 
 int main() {
   uWS::Hub h;
@@ -198,15 +245,17 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  double ref_vel = 49.5;
-  h.onMessage([&ref_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  smooth_track.init(map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy);
+
+  double ref_vel = 0.0;
+  int lane = 1;
+  h.onMessage([&lane, &ref_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     //auto sdata = string(data).substr(0, length);
     //cout << sdata << endl;
-    int lane = 0;
     if (length && length > 2 && data[0] == '4' && data[1] == '2') {
 
       auto s = hasData(data);
@@ -237,11 +286,6 @@ int main() {
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
-            int prev_size = previous_path_x.size();
-
-            if(prev_size > 0) {
-              car_s = end_path_s;
-            }
             bool too_close = false;
             for(int i = 0; i < sensor_fusion.size(); i++) {
               // car is in my lane
@@ -254,126 +298,73 @@ int main() {
                 // predict where car will be
                 //check_car_s += ((double)prev_size*0.2*check_speed);
                 double d_ahead = check_car_s - car_s;
-                cout << "car ahead " << d_ahead << " meters." << endl;
+                //cout << "car ahead " << d_ahead << " meters." << endl;
                 if( d_ahead > 0 && d_ahead <30) {
-
-                  ref_vel -= 0.3; //mph
+                  too_close = true;
                 }
               }
             }
 
-          	json msgJson;
+            double speed_limit = 45.0;
 
-            vector<double> ptsx;
-            vector<double> ptsy;
-            double ref_x = car_x;
-            double ref_y = car_y;
-            double ref_yaw = deg2rad(car_yaw);
-            if(1 || prev_size < 2) {
-                // use two points tangent to car
-                double prev_car_x = car_x - cos(ref_yaw);
-                double prev_car_y = car_y - sin(ref_yaw);
-                //ptsx.push_back(prev_car_x);
-                //ptsx.push_back(car_x);
-                //ptsy.push_back(prev_car_y);
-                //ptsy.push_back(car_y);
-                // cout << " prev_car_x: " << prev_car_x;
-                // cout << "car_y: " << car_y;
-                // cout << "car_x: " << car_x;
-                // cout << " prev_car_y: " << prev_car_y;
-                // cout << "car_yaw: " << ref_yaw;
+            if(too_close) {
+              cout << "too close, slowing down" << endl;
+              ref_vel -= 0.225;
             } else {
-                // redefine reference state as previous path end point
-                ref_x = previous_path_x[prev_size-1];
-                ref_y = previous_path_y[prev_size-1];
-                double ref_x_prev = previous_path_x[prev_size-2];
-                double ref_y_prev = previous_path_y[prev_size-2];
-                ref_yaw=atan2(ref_y-ref_y_prev,ref_x-ref_x_prev);
-                //ptsx.push_back(ref_x_prev);
-                //ptsx.push_back(ref_x);
-                //ptsy.push_back(ref_y_prev);
-                //ptsy.push_back(ref_y_prev);
+              cout << "not too close" << endl;
+              ref_vel += 0.225;
             }
 
-            int nextWp = NextWaypoint(car_x,car_y,car_yaw,map_waypoints_x,map_waypoints_y);
-            for(int i = nextWp-5; i < nextWp+5; i++ ) {
-
-              double s = map_waypoints_s[i];
-
-              vector<double> wp = getXY(s, 2+4*lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-              ptsx.push_back(wp[0]);
-              ptsy.push_back(wp[1]);
+            if(ref_vel > speed_limit) {
+              ref_vel = speed_limit;
             }
 
-
-            for(int i = 0; i < ptsx.size(); i++) {
-              // shift car reference angle to zero degrees
-              double shift_x = ptsx[i]-ref_x;
-              double shift_y = ptsy[i]-ref_y;
-              ptsx[i] = (shift_x*cos(-ref_yaw)-shift_y*sin(-ref_yaw));
-              ptsy[i] = (shift_x*sin(-ref_yaw)+shift_y*cos(-ref_yaw));
+            if(too_close ) {
+              if(lane>0) {
+                lane--;
+              } else {
+                lane++;
+              }
             }
 
-            tk::spline s;
-            s.set_points(ptsx, ptsy);
-
-
-
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
-
-            /*
-            for(int i = 0; i < previous_path_x.size(); i++) {
-              next_x_vals.push_back(previous_path_x[i]);
-              next_y_vals.push_back(previous_path_y[i]);
+            // remove path points already visited
+            while(path.size() > previous_path_x.size()) {
+              path.erase(path.begin());
             }
-            */
 
+            // set path to car position if path is empty
+            if(path.size() == 0) {
+              CarState car;
+              car.s = car_s;
+              car.d = car_d;
+              Point p = smooth_track.get_point(car_s, car_d);
+              car.x = p.x;
+              car.y = p.y;
+              car.speed = car_speed;
+              car.acceleration_s = 0;
+              path.push_back(car);
+            }
 
-            // Calculate how to break up spline points so that we travel at our desired reference velocity
-            double target_x = 160.0;
-            double target_y = s(target_x);
-            double target_dist = sqrt(target_x*target_x+target_y*target_y);
-            double x_add_on = 0;
-
-            // fill the rest of the path planner
             const double mph_to_m_s = 0.44704;
-            for(int i = -30; i <= 50/*-previous_path_x.size()*/; i++) {
-              double N = target_dist/(.02*ref_vel*mph_to_m_s);
-              double x_point = x_add_on+target_x/N;
-              double y_point = s(x_point);
-              x_add_on = x_point;
-              double x_ref = x_point;
-              double y_ref = y_point;
-              x_point = (x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw));
-              y_point = (x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw));
+            vector<double> next_x_vals, next_y_vals;
 
-              x_point += ref_x;
-              y_point += ref_y;
-
-              next_x_vals.push_back(x_point);
-              next_y_vals.push_back(y_point);
-
-            }
-            /*
             double dt = 0.02;
-            double dist_inc = 0.3;
-            //double next_s = s;
-            for(int i = 0; i < 50; i++)
-            {
-                double next_s = car_s + dist_inc * i;
-                double d = 6;
-                vector<double> xy = getXY(next_s, s(next_s)+d,map_waypoints_s, map_waypoints_x, map_waypoints_y);
-                double next_x = xy[0];
-                double next_y = xy[1];
-
-              //next_x_vals.push_back(car_x+(dist_inc*i)*cos(deg2rad(car_yaw)));
-              //next_y_vals.push_back(car_y+(dist_inc*i)*sin(deg2rad(car_yaw)));
-              next_x_vals.push_back(next_x);
-              next_y_vals.push_back(next_y);
+            const int number_of_points_to_send = 20;
+            CarState car_state = path[path.size()-1];
+            while(path.size() < number_of_points_to_send) {
+              car_state.s += 0.02 * ref_vel * mph_to_m_s;
+              Point p = smooth_track.get_point(car_state.s, car_state.d);
+              car_state.x = p.x;
+              car_state.y = p.y;
+              path.push_back(car_state);
             }
-            */
 
+            for(CarState & car : path) {
+              next_x_vals.push_back(car.x);
+              next_y_vals.push_back(car.y);
+            }
+
+            json msgJson;
             msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
