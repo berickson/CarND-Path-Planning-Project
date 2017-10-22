@@ -603,36 +603,67 @@ int main() {
             LaneStatus & l = lane_status[lane-1];
 
             // see which lane is best
-            bool right_lane_available = false;
+            bool right_lane_change_safe = false;
             if(lane < 2) {
-              right_lane_available =
+              right_lane_change_safe =
                   is_lane_change_safe(r, seconds_to_execute_lane_change, car_state.m_s)
                   && is_lane_change_safe(my_lane, seconds_to_execute_lane_change, car_state.m_s);
             }
 
 
-            bool left_lane_available = false;
+            bool left_lane_change_safe = false;
             if(lane > 0) {
-              left_lane_available =
+              left_lane_change_safe =
                   is_lane_change_safe(l, seconds_to_execute_lane_change, car_state.m_s)
                   && is_lane_change_safe(my_lane, seconds_to_execute_lane_change, car_state.m_s);
             }
 
-            double lane_delta = 0;
-            //if(too_close) {
-              if(right_lane_available && ((my_lane.has_car_ahead && !r.has_car_ahead ) || (r.v_ahead > my_lane.v_ahead))) {
-                lane_delta = 1;
-              } else if ( left_lane_available && ((my_lane.has_car_ahead && !l.has_car_ahead) || (l.v_ahead > my_lane.v_ahead))) {
-                lane_delta = -1;
+            // get scores for each line
+            vector<double> lane_costs={0,0,0};
+
+            for(int i= 0; i< 3; i++) {
+              LaneStatus l = lane_status[i];
+              if(l.has_car_ahead) {
+                // prefer cars to be far away
+                lane_costs[i] += tanh((100.-l.closest_d_ahead)/100.);
+                // prefer cars in front to be going fast
+                lane_costs[i] += tanh((50.-l.v_ahead)/30.);
+              } else {
+                lane_costs[i] -= 2;
               }
-            //}
+              // keep options open by preferring middle lane
+              if(i != 1) {
+                lane_costs[i] += 0.5;
+              }
+            }
+
+            // safety overrides above
+            double keep_cost, left_lane_change_cost, right_lane_change_cost;
+
+            if(right_lane_change_safe) {
+              right_lane_change_cost = lane_costs[lane+1];
+            } else {
+              right_lane_change_cost = 999;
+            }
+            if(left_lane_change_safe) {
+              left_lane_change_cost = lane_costs[lane-1];
+            } else {
+              left_lane_change_cost = 999;
+            }
+            keep_cost = lane_costs[lane];
+
+
+            double lane_delta = 0;
+            if(left_lane_change_cost < keep_cost && left_lane_change_cost < right_lane_change_cost) {
+              lane_delta = -1;
+            } else if (right_lane_change_cost < keep_cost && right_lane_change_cost < left_lane_change_cost) {
+              lane_delta = 1;
+            }
 
             // remove path points already visited
             while(path.size() > previous_path_x.size()) {
               path.erase(path.begin());
             }
-
-
 
             vector<double> next_x_vals, next_y_vals;
 
@@ -740,8 +771,5 @@ int main() {
 /*
 
 todo:
-- add fsm to track states
 - add scores per lane ( calc scores per state )
-- don't change lanes if a car is going to be near you within n seconds
-
 */
