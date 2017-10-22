@@ -625,7 +625,7 @@ int main() {
               LaneStatus l = lane_status[i];
               if(l.has_car_ahead) {
                 // prefer cars to be far away
-                lane_costs[i] += tanh((100.-l.closest_d_ahead)/100.);
+                lane_costs[i] += tanh((50.-l.closest_d_ahead)/100.);
                 // prefer cars in front to be going fast
                 lane_costs[i] += tanh((50.-l.v_ahead)/30.);
               } else {
@@ -633,7 +633,7 @@ int main() {
               }
               // keep options open by preferring middle lane
               if(i != 1) {
-                lane_costs[i] += 0.5;
+                lane_costs[i] += 0.2;
               }
             }
 
