@@ -335,6 +335,7 @@ struct FusionCar {
 vector<CarState> path;
 
 struct LaneStatus{
+  int lane_number = 0;
   double closest_d_ahead = 999;
   double v_ahead = NAN;
   double v_behind = NAN;
@@ -407,8 +408,44 @@ vector<double> jerk_minimizing_trajectory(vector< double> start, vector <double>
   }
 
     return result;
-
 }
+
+bool is_lane_change_safe(LaneStatus & lane_status, double seconds_required, double current_speed) {
+  double min_front_gap = 10;
+  double min_rear_gap = 20;
+
+  // note: closest_d values are negative when behind self
+
+  // not safe if the cars are currently too close
+  if(lane_status.has_car_ahead) {
+    if(lane_status.closest_d_ahead < min_front_gap) {
+      return false;
+    }
+  }
+
+  if(lane_status.has_car_behind) {
+    if(lane_status.closest_d_behind > -min_rear_gap) {
+      return false;
+    }
+  }
+
+  // not safe if the cars will be too close, assuming constant velocities
+  if(lane_status.has_car_ahead) {
+    double end_d_ahead = lane_status.closest_d_ahead + seconds_required * (lane_status.v_ahead - current_speed);
+    if(end_d_ahead < min_front_gap) {
+      return false;
+    }
+  }
+  if(lane_status.has_car_behind) {
+    double end_d_behind = lane_status.closest_d_behind + seconds_required * (lane_status.v_behind - current_speed);
+    if(end_d_behind > -min_rear_gap) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 
 
 int main() {
@@ -511,6 +548,7 @@ int main() {
 
             for(int i=0;i<3;i++) {
               LaneStatus & s = lane_status[i];
+              s.lane_number = 0;
               cout << "L" << i << " (" << std::fixed << std::setprecision(1) << std::setw(5)<< s.closest_d_ahead << ", " << s.closest_d_behind << ") ";
             }
             cout << endl;
@@ -544,23 +582,40 @@ int main() {
             }
 
             target_speed_m_s = clamp(target_speed_m_s, 0, speed_limit_m_s);
+            // set path to car position if path is empty, make first car state
+            if(path.size() == 0) {
+              CarState car;
+              car.s = car_s;
+              car.d = 2+4.*lane;//car_d;
+              Point p = smooth_track.get_point(car.s, car.d);
+              car.x = p.x;
+              car.y = p.y;
+              car.m_s = ref_vel_m_s;
+              car.acceleration_s = 0;
+              car.mode = keep_lane;
+              path.push_back(car);
+            }
+            CarState car_state = path[path.size()-1];
+            const double min_lane_change_m_s = 5;     // speed to be going before considering a lane change
+            double seconds_to_execute_lane_change = 3;
 
+            LaneStatus & r = lane_status[lane+1];
+            LaneStatus & l = lane_status[lane-1];
 
             // see which lane is best
             bool right_lane_available = false;
-            LaneStatus & r = lane_status[lane+1];
-            LaneStatus & l = lane_status[lane-1];
             if(lane < 2) {
-              if( (r.closest_d_ahead > min_front_gap && r.closest_d_behind < -min_back_gap)) {
-                right_lane_available = true;
-              }
+              right_lane_available =
+                  is_lane_change_safe(r, seconds_to_execute_lane_change, car_state.m_s)
+                  && is_lane_change_safe(my_lane, seconds_to_execute_lane_change, car_state.m_s);
             }
+
 
             bool left_lane_available = false;
             if(lane > 0) {
-              if( (l.closest_d_ahead > min_front_gap && l.closest_d_behind < -min_back_gap)) {
-                left_lane_available = true;
-              }
+              left_lane_available =
+                  is_lane_change_safe(l, seconds_to_execute_lane_change, car_state.m_s)
+                  && is_lane_change_safe(my_lane, seconds_to_execute_lane_change, car_state.m_s);
             }
 
             double lane_delta = 0;
@@ -577,26 +632,13 @@ int main() {
               path.erase(path.begin());
             }
 
-            // set path to car position if path is empty, make first car state
-            if(path.size() == 0) {
-              CarState car;
-              car.s = car_s;
-              car.d = 2+4.*lane;//car_d;
-              Point p = smooth_track.get_point(car.s, car.d);
-              car.x = p.x;
-              car.y = p.y;
-              car.m_s = ref_vel_m_s;
-              car.acceleration_s = 0;
-              car.mode = keep_lane;
-              path.push_back(car);
-            }
+
 
             vector<double> next_x_vals, next_y_vals;
 
             double dt = 0.02;
             const int number_of_points_to_send = 20;
-            CarState car_state = path[path.size()-1];
-            const double min_lane_change_m_s = 5;
+
             if(path.size() < number_of_points_to_send) {
               if(lane_delta == 0 || car_state.m_s < min_lane_change_m_s) {
                 // generate trajector for keep lane
@@ -620,9 +662,8 @@ int main() {
                 }
               } else {
                 // generate trajectory for changing lanes
-                double seconds = 2;
-                Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
-                for(double t = dt; t<=seconds; t+= dt) {
+                Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds_to_execute_lane_change));
+                for(double t = dt; t<=seconds_to_execute_lane_change; t+= dt) {
                   double d_normal = trajectory.eval(t)-car_state.d;
                   double dx = dt * car_state.m_s;
                   double d_tangent = sqrt(dx*dx-d_normal*d_normal);
@@ -701,4 +742,6 @@ int main() {
 todo:
 - add fsm to track states
 - add scores per lane ( calc scores per state )
+- don't change lanes if a car is going to be near you within n seconds
+
 */
