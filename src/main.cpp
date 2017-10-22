@@ -536,16 +536,8 @@ int main() {
               }
 
             }
+
             target_speed_m_s = clamp(target_speed_m_s, 0, speed_limit_m_s);
-
-            // todo: move this to the waypoint creation loop
-            if(ref_vel_m_s < target_speed_m_s) {
-              ref_vel_m_s += std::min(0.1, target_speed_m_s - ref_vel_m_s);
-            } else if (ref_vel_m_s > target_speed_m_s) {
-              ref_vel_m_s -= std::min(0.1, ref_vel_m_s - target_speed_m_s);
-            }
-
-            ref_vel_m_s = clamp(ref_vel_m_s, 0, speed_limit_m_s);
 
 
             // see which lane is best
@@ -587,6 +579,7 @@ int main() {
               Point p = smooth_track.get_point(car.s, car.d);
               car.x = p.x;
               car.y = p.y;
+              car.m_s = ref_vel_m_s;
               car.acceleration_s = 0;
               path.push_back(car);
             }
@@ -596,15 +589,23 @@ int main() {
             double dt = 0.02;
             const int number_of_points_to_send = 20;
             CarState car_state = path[path.size()-1];
-            if(lane_delta == 0) {
+            const double min_lane_change_m_s = 5;
+            if(lane_delta == 0 || car_state.m_s < min_lane_change_m_s) {
               while(path.size() < number_of_points_to_send) {
+                // todo: move this to the waypoint creation loop
+                if(car_state.m_s < target_speed_m_s) {
+                  car_state.m_s += std::min(0.1, target_speed_m_s - car_state.m_s);
+                } else if (car_state.m_s > target_speed_m_s) {
+                  car_state.m_s -= std::min(0.1, car_state.m_s - target_speed_m_s);
+                }
+                car_state.m_s = clamp(car_state.m_s, 0, speed_limit_m_s);
+
                 car_state.d = 2+4.*lane;
-                double dx = dt * ref_vel_m_s;
+                double dx = dt * car_state.m_s;
                 car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, dx);
                 Point p = smooth_track.get_point(car_state.s, car_state.d);
                 car_state.x = p.x;
                 car_state.y = p.y;
-                car_state.m_s = ref_vel_m_s;
                 path.push_back(car_state);
               }
             } else {
@@ -614,7 +615,7 @@ int main() {
               Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
               for(double t = dt; t<=seconds; t+= dt) {
                 double d_normal = trajectory.eval(t)-car_state.d;
-                double dx = dt * ref_vel_m_s;
+                double dx = dt * car_state.m_s;
                 double d_tangent = sqrt(dx*dx-d_normal*d_normal);
                 car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, d_tangent);
                 car_state.d = trajectory.eval(t);
