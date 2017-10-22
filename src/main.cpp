@@ -24,6 +24,12 @@ using json = nlohmann::json;
 
 const double mph_to_m_s = 0.44704;
 
+double clamp(double a, double low, double high) {
+  if (a < low) return low;
+  if (a > high) return high;
+  return a;
+}
+
 
 // structs, because they're easier to debug than vectors
 struct Point {
@@ -240,7 +246,7 @@ double last_s_sent = NAN;
 
 
 struct CarState {
-  double x,y,s,d,speed,acceleration_s, acceleration_d,sequence;
+  double x,y,s,d,m_s,acceleration_s, acceleration_d,sequence;
 };
 
 struct FusionCar {
@@ -263,9 +269,11 @@ vector<CarState> path;
 
 struct LaneStatus{
   double closest_d_ahead = 999;
-  double v_ahead = 999;
-  double v_behind = 0;
+  double v_ahead = NAN;
+  double v_behind = NAN;
   double closest_d_behind = -999;
+  bool has_car_ahead = false;
+  bool has_car_behind = false;
 };
 
 class Polynomial {
@@ -376,9 +384,9 @@ int main() {
 
   smooth_track.init(map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy, max_s);
 
-  double ref_vel = 0.0;
+  double ref_vel_m_s = 0.0;
   int lane = 1;
-  h.onMessage([&lane, &ref_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&lane, &ref_vel_m_s, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -419,7 +427,6 @@ int main() {
 
             LaneStatus lane_status[3];
 
-            double car_ahead_speed_m_s;
             for(int i = 0; i < sensor_fusion.size(); i++) {
               FusionCar check_car(sensor_fusion[i]);
               LaneStatus & check_lane = lane_status [check_car.lane];
@@ -427,10 +434,12 @@ int main() {
               if(d_ahead > 0 && d_ahead < check_lane.closest_d_ahead) {
                 check_lane.closest_d_ahead = d_ahead;
                 check_lane.v_ahead = check_car.speed_m_s;
+                check_lane.has_car_ahead = true;
               }
               if(d_ahead < 0 && d_ahead > check_lane.closest_d_behind) {
                 check_lane.closest_d_behind = d_ahead;
                 check_lane.v_behind = check_car.speed_m_s;
+                check_lane.has_car_behind = true;
               }
             }
 
@@ -441,51 +450,67 @@ int main() {
             cout << endl;
 
             double speed_limit = 46.0;
+            double speed_limit_m_s = speed_limit * mph_to_m_s;
             cout << "car_s: " << car_s << endl;
 
             double min_front_gap = 20;
             double min_back_gap = 10;
+            double max_follow_gap = 25;
 
-            bool too_close = lane_status[lane].closest_d_ahead < min_front_gap;
+            LaneStatus & my_lane = lane_status[lane];
 
-            if(too_close) {
-              if(car_ahead_speed_m_s < car_speed_mph * mph_to_m_s) {
-                cout << "too close, slowing down" << endl;
-                ref_vel -= 0.45;
+            double target_speed_m_s = speed_limit_m_s;
+
+            bool too_close = false;
+            // try to follow car ahead
+            if(my_lane.has_car_ahead) {
+              too_close = my_lane.closest_d_ahead < min_front_gap;
+              bool too_far = my_lane.closest_d_ahead > max_follow_gap;
+              if(too_close) {
+                target_speed_m_s = my_lane.v_ahead - 2;
+              } else if (too_far ){
+                target_speed_m_s = speed_limit_m_s;
+              } else {
+                target_speed_m_s = my_lane.v_ahead;
               }
-            } else {
-              ref_vel += 0.45;
+            }
+            target_speed_m_s = clamp(target_speed_m_s, 0, speed_limit_m_s);
+
+            // todo: move this to the waypoint creation loop
+            if(ref_vel_m_s < target_speed_m_s) {
+              ref_vel_m_s += std::min(0.1, target_speed_m_s - ref_vel_m_s);
+            } else if (ref_vel_m_s > target_speed_m_s) {
+              ref_vel_m_s -= std::min(0.1, ref_vel_m_s - target_speed_m_s);
             }
 
-            if(ref_vel > speed_limit) {
-              ref_vel = speed_limit;
-            }
+            ref_vel_m_s = clamp(ref_vel_m_s, 0, speed_limit_m_s);
 
 
+            // see which lane is best
             bool right_lane_available = false;
+            LaneStatus & r = lane_status[lane+1];
+            LaneStatus & l = lane_status[lane-1];
             if(lane < 2) {
-              LaneStatus & r = lane_status[lane+1];
-              if(r.closest_d_ahead > min_front_gap && r.closest_d_behind < -min_back_gap) {
+              if((my_lane.has_car_ahead && !r.has_car_ahead ) || (r.closest_d_ahead > min_front_gap && r.closest_d_behind < -min_back_gap)) {
                 right_lane_available = true;
               }
             }
 
             bool left_lane_available = false;
             if(lane > 0) {
-              LaneStatus & l = lane_status[lane-1];
-              if(l.closest_d_ahead > min_front_gap && l.closest_d_behind < -min_back_gap) {
+              if((my_lane.has_car_ahead && !l.has_car_ahead) || (l.closest_d_ahead > min_front_gap && l.closest_d_behind < -min_back_gap)) {
                 left_lane_available = true;
               }
             }
 
             double lane_delta = 0;
-            if(too_close) {
-              if(right_lane_available) {
+            //if(too_close) {
+              if(right_lane_available && r.v_ahead > my_lane.v_ahead) {
                 lane_delta = 1;
-              } else if ( left_lane_available) {
+              } else if ( left_lane_available && l.v_ahead > my_lane.v_ahead) {
                 lane_delta = -1;
               }
-            }
+            //}
 
             // remove path points already visited
             while(path.size() > previous_path_x.size()) {
@@ -500,7 +525,6 @@ int main() {
               Point p = smooth_track.get_point(car.s, car.d);
               car.x = p.x;
               car.y = p.y;
-              car.speed = car_speed_mph;
               car.acceleration_s = 0;
               path.push_back(car);
             }
@@ -512,18 +536,20 @@ int main() {
             CarState car_state = path[path.size()-1];
             if(lane_delta == 0) {
               while(path.size() < number_of_points_to_send) {
-                car_state.s += 0.02 * ref_vel * mph_to_m_s;
+                car_state.s += 0.02 * ref_vel_m_s;
                 car_state.d = 2+4.*lane;
                 Point p = smooth_track.get_point(car_state.s, car_state.d);
                 car_state.x = p.x;
                 car_state.y = p.y;
+                car_state.m_s = ref_vel_m_s;
                 path.push_back(car_state);
               }
             } else {
+              // generate trajectory for changing lanes
               double seconds = 2;
               Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
               for(double t = dt; t<=seconds; t+= dt) {
-                car_state.s += dt * ref_vel * mph_to_m_s;
+                car_state.s += dt * ref_vel_m_s;
                 car_state.d = trajectory.eval(t);
                 Point p = smooth_track.get_point(car_state.s, car_state.d);
                 car_state.x = p.x;
@@ -590,3 +616,13 @@ int main() {
   }
   h.run();
 }
+
+
+/*
+
+todo:
+- add fsm to track states
+- add scores per lane ( calc scores per state )
+- keep from changing lanes twice in a row (wait till done with lane change to change state)
+
+*/
