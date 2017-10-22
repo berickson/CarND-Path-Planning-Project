@@ -44,11 +44,34 @@ For lane changes, I had to ensure that lateral speed was accounted for, not just
 
 ##### Max Acceleration and Jerk are not Exceeded.
 
-I solved this goal by using smooth routes, and smooth lane changes.  The smooth lane changes use a jerk minimizing function as suggested in the course.  See the "jerk_minimizing_trajectory" function in main.cp.
-
+I solved this goal by using smooth routes, and smooth lane changes.  The smooth lane changes use a jerk minimizing function as suggested in the course.  See the "jerk_minimizing_trajectory" function in main.cpp.
 
 ##### Car does not have collisions.
 
+The car avoid collisions by only changing lanes when it is safe and by tracking speed to the car ahead.
+
+Lane change safety is maintained by calculating an expected clearance gap at the begin and end of the lane change.  Both the current lane and the candidate lane are considered. Speeds of cars in front of the car and behind the car are assumed to keep constant velocity during the lane change.
+
+Tracking speed of the car ahead is fairly simple and doesn't really need a PID.  Speed is reduced if the car is too close, and if the car is a good distance, the algorithm simply sets a target speed to matcht the speed of the car ahead.
+
 ##### The car stays in its lane, except for the time between changing lanes.
 
+Smooth tracks are computed for the center of lanes using Frenet coordinates and the bezier based SmoothTrack class.  Lane centers are kept perfectly except when a lane change maneuver is executed.  Lane change manuevers always start and end in lane centers.
+
 ##### The car is able to change lanes
+
+The car uses a cost function to know when to change lanes.  It considers the speed and distance of the car ahead for each lane. Faster speeds and greater distances are rewarded with lower costs.  Additionally, the center lane is preferred and given a lower cost.  The tanh function is used to keep scores in a manageble range.
+
+
+### Reflection
+
+Generating paths has two distict modes.  One is for lane keeping, and one is for lane following.
+
+For lane keeping, a small number of points are generated.  Goal velocities are determined based on speed limit, speed and distance of the car ahead.  The car accelerates or decelerates to reach goal velocity.  I chose a rather aggressive 5 m/s^3 for the acceleration.  This keeps a good amount of acceleration available for the lateral acceleration needed to keep lanes during curves.
+
+For lane changing, a complete lane change set of points is created and committed to.  That is why it is so important to analyze the safety of the lane change in advance. It this model once it is started, it is always completed.
+
+Here are some places that could be improved for a more reliable system:
+- Consider more cases for safety, for example, when another car enters your lane space.
+- Look more steps ahead in path planning
+- Have the ability to abort lane change manouvers.
