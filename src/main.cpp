@@ -30,12 +30,48 @@ double clamp(double a, double low, double high) {
   return a;
 }
 
+double netwon_solve(std::function<double(double)> f, double guess) {
+    const double dx = 1E-6;
+    const double epsilon = 1E-9;
+    int max_iters = 20;
+    for(int i = 0; i < max_iters; i++) {
+        double x = f(guess);
+        if(x<epsilon) break;
+        double x_left = f(guess-dx);
+        double x_right = f(guess+dx);
+        double x_dot = (x_right-x_left)/(2*dx);
+        guess -= x/x_dot;
+    }
+    return guess;
+}
+
+double newton_minimize(std::function<double(double)> f, double guess) {
+    const double dx = 1E-6;
+    const double epsilon = 1E-9;
+    int max_iters = 20;
+    for(int i = 0; i < max_iters; i++) {
+        double x = f(guess);
+        double x_left = f(guess-dx);
+        double x_right = f(guess+dx);
+        double x_dot = (x_right-x_left)/(2*dx);
+        if(fabs(x_dot)<epsilon) break;
+        double x_double_dot = ((x_right-x)/dx - (x-x_left)/ dx)/dx;
+        guess -= x_dot/x_double_dot;
+    }
+    return guess;
+}
 
 // structs, because they're easier to debug than vectors
 struct Point {
   Point(double x=NAN, double y=NAN):x(x),y(y){}
   double x = NAN;
   double y = NAN;
+  double distance_to(const Point & p2) const {
+    const Point & p1 = *this;
+    double dx = p2.x-p1.x;
+    double dy = p2.y-p1.y;
+    return sqrt(dx*dx+dy*dy);
+  }
 };
 
 struct Frenet {
@@ -240,11 +276,29 @@ public:
     return p;
   }
 
+  double get_s_ahead(double s, double d, double desired_distance) {
+    assert(desired_distance>=0);
+    Point p1 = get_point(s,d);
 
-  Frenet get_frenet(double approx_s, double approx_d, double x, double y) {
-      // since there are many solutions, we start with approx_s, approx_d
-      Point next = get_point(approx_s+0.1,approx_d);
-      Point prev = get_point(approx_s-0.1,approx_d);
+    // returns point ds in front of (s,d)
+    std::function<double(double)> error = [this,d,s,p1,desired_distance](double ds){
+      Point p2 = get_point(s+fabs(ds), d);
+      double delta = p1.distance_to(p2)-desired_distance;
+      return delta*delta;
+    };
+    double ds = newton_minimize(error, desired_distance);
+    return s + ds;
+  }
+
+  Frenet get_frenet(Point p, double approx_s) {
+      std::function<double(double)> d2 = [this,p](double s){
+          Point p2 = get_point(s);
+          return p2.x * p.x + p2.y * p.y;
+      };
+      double s = newton_minimize(d2, approx_s);
+      double d = sqrt(d2(s));
+      return Frenet(s, d);
+      // todo: find sign of d, currently we only need positive
   }
 };
 
@@ -352,7 +406,6 @@ vector<double> jerk_minimizing_trajectory(vector< double> start, vector <double>
 
 
 int main() {
-
   uWS::Hub h;
 
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
@@ -456,7 +509,7 @@ int main() {
             }
             cout << endl;
 
-            double speed_limit = 46.0;
+            double speed_limit = 49.5;
             double speed_limit_m_s = speed_limit * mph_to_m_s;
             cout << "car_s: " << car_s << endl;
 
@@ -545,8 +598,9 @@ int main() {
             CarState car_state = path[path.size()-1];
             if(lane_delta == 0) {
               while(path.size() < number_of_points_to_send) {
-                car_state.s += 0.02 * ref_vel_m_s;
                 car_state.d = 2+4.*lane;
+                double dx = dt * ref_vel_m_s;
+                car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, dx);
                 Point p = smooth_track.get_point(car_state.s, car_state.d);
                 car_state.x = p.x;
                 car_state.y = p.y;
@@ -559,7 +613,10 @@ int main() {
               double seconds = 2;
               Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
               for(double t = dt; t<=seconds; t+= dt) {
-                car_state.s += dt * ref_vel_m_s;
+                double d_normal = trajectory.eval(t)-car_state.d;
+                double dx = dt * ref_vel_m_s;
+                double d_tangent = sqrt(dx*dx-d_normal*d_normal);
+                car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, d_tangent);
                 car_state.d = trajectory.eval(t);
                 Point p = smooth_track.get_point(car_state.s, car_state.d);
                 car_state.x = p.x;
