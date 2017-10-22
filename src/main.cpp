@@ -305,9 +305,15 @@ public:
 SmoothTrack smooth_track;
 double last_s_sent = NAN;
 
+enum PlanningMode {
+  keep_lane,
+  lane_change
+};
 
 struct CarState {
   double x,y,s,d,m_s,acceleration_s, acceleration_d,sequence;
+  PlanningMode mode;
+
 };
 
 struct FusionCar {
@@ -571,7 +577,7 @@ int main() {
               path.erase(path.begin());
             }
 
-            // set path to car position if path is empty
+            // set path to car position if path is empty, make first car state
             if(path.size() == 0) {
               CarState car;
               car.s = car_s;
@@ -581,6 +587,7 @@ int main() {
               car.y = p.y;
               car.m_s = ref_vel_m_s;
               car.acceleration_s = 0;
+              car.mode = keep_lane;
               path.push_back(car);
             }
 
@@ -590,42 +597,45 @@ int main() {
             const int number_of_points_to_send = 20;
             CarState car_state = path[path.size()-1];
             const double min_lane_change_m_s = 5;
-            if(lane_delta == 0 || car_state.m_s < min_lane_change_m_s) {
-              while(path.size() < number_of_points_to_send) {
-                // todo: move this to the waypoint creation loop
-                if(car_state.m_s < target_speed_m_s) {
-                  car_state.m_s += std::min(0.1, target_speed_m_s - car_state.m_s);
-                } else if (car_state.m_s > target_speed_m_s) {
-                  car_state.m_s -= std::min(0.1, car_state.m_s - target_speed_m_s);
+            if(path.size() < number_of_points_to_send) {
+              if(lane_delta == 0 || car_state.m_s < min_lane_change_m_s) {
+                // generate trajector for keep lane
+                while(path.size() < number_of_points_to_send) {
+                  // try to reach target speed
+                  if(car_state.m_s < target_speed_m_s) {
+                    car_state.m_s += std::min(0.1, target_speed_m_s - car_state.m_s);
+                  } else if (car_state.m_s > target_speed_m_s) {
+                    car_state.m_s -= std::min(0.1, car_state.m_s - target_speed_m_s);
+                  }
+                  car_state.m_s = clamp(car_state.m_s, 0, speed_limit_m_s);
+
+                  car_state.d = 2+4.*lane;
+                  double dx = dt * car_state.m_s;
+                  car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, dx);
+                  Point p = smooth_track.get_point(car_state.s, car_state.d);
+                  car_state.x = p.x;
+                  car_state.y = p.y;
+                  car_state.mode = keep_lane;
+                  path.push_back(car_state);
                 }
-                car_state.m_s = clamp(car_state.m_s, 0, speed_limit_m_s);
-
-                car_state.d = 2+4.*lane;
-                double dx = dt * car_state.m_s;
-                car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, dx);
-                Point p = smooth_track.get_point(car_state.s, car_state.d);
-                car_state.x = p.x;
-                car_state.y = p.y;
-                path.push_back(car_state);
+              } else {
+                // generate trajectory for changing lanes
+                double seconds = 2;
+                Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
+                for(double t = dt; t<=seconds; t+= dt) {
+                  double d_normal = trajectory.eval(t)-car_state.d;
+                  double dx = dt * car_state.m_s;
+                  double d_tangent = sqrt(dx*dx-d_normal*d_normal);
+                  car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, d_tangent);
+                  car_state.d = trajectory.eval(t);
+                  Point p = smooth_track.get_point(car_state.s, car_state.d);
+                  car_state.x = p.x;
+                  car_state.y = p.y;
+                  path.push_back(car_state);
+                  car_state.mode = lane_change;
+                }
+                lane += lane_delta;
               }
-            } else {
-
-              // generate trajectory for changing lanes
-              double seconds = 2;
-              Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
-              for(double t = dt; t<=seconds; t+= dt) {
-                double d_normal = trajectory.eval(t)-car_state.d;
-                double dx = dt * car_state.m_s;
-                double d_tangent = sqrt(dx*dx-d_normal*d_normal);
-                car_state.s = smooth_track.get_s_ahead(car_state.s, car_state.d, d_tangent);
-                car_state.d = trajectory.eval(t);
-                Point p = smooth_track.get_point(car_state.s, car_state.d);
-                car_state.x = p.x;
-                car_state.y = p.y;
-                path.push_back(car_state);
-              }
-              lane += lane_delta;
-
             }
 
             for(CarState & car : path) {
@@ -691,6 +701,4 @@ int main() {
 todo:
 - add fsm to track states
 - add scores per lane ( calc scores per state )
-- keep from changing lanes twice in a row (wait till done with lane change to change state)
-
 */
