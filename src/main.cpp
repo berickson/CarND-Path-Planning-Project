@@ -239,6 +239,13 @@ public:
     p.y = s_to_y(s) + d * s_to_dy(s);
     return p;
   }
+
+
+  Frenet get_frenet(double approx_s, double approx_d, double x, double y) {
+      // since there are many solutions, we start with approx_s, approx_d
+      Point next = get_point(approx_s+0.1,approx_d);
+      Point prev = get_point(approx_s-0.1,approx_d);
+  }
 };
 
 SmoothTrack smooth_track;
@@ -455,7 +462,8 @@ int main() {
 
             double min_front_gap = 20;
             double min_back_gap = 10;
-            double max_follow_gap = 25;
+            double min_follow_gap = 15;
+            double max_follow_gap = 18;
 
             LaneStatus & my_lane = lane_status[lane];
 
@@ -464,7 +472,7 @@ int main() {
             bool too_close = false;
             // try to follow car ahead
             if(my_lane.has_car_ahead) {
-              too_close = my_lane.closest_d_ahead < min_front_gap;
+              too_close = my_lane.closest_d_ahead < min_follow_gap;
               bool too_far = my_lane.closest_d_ahead > max_follow_gap;
               if(too_close) {
                 target_speed_m_s = my_lane.v_ahead - 2;
@@ -473,6 +481,7 @@ int main() {
               } else {
                 target_speed_m_s = my_lane.v_ahead;
               }
+
             }
             target_speed_m_s = clamp(target_speed_m_s, 0, speed_limit_m_s);
 
@@ -491,23 +500,23 @@ int main() {
             LaneStatus & r = lane_status[lane+1];
             LaneStatus & l = lane_status[lane-1];
             if(lane < 2) {
-              if((my_lane.has_car_ahead && !r.has_car_ahead ) || (r.closest_d_ahead > min_front_gap && r.closest_d_behind < -min_back_gap)) {
+              if( (r.closest_d_ahead > min_front_gap && r.closest_d_behind < -min_back_gap)) {
                 right_lane_available = true;
               }
             }
 
             bool left_lane_available = false;
             if(lane > 0) {
-              if((my_lane.has_car_ahead && !l.has_car_ahead) || (l.closest_d_ahead > min_front_gap && l.closest_d_behind < -min_back_gap)) {
+              if( (l.closest_d_ahead > min_front_gap && l.closest_d_behind < -min_back_gap)) {
                 left_lane_available = true;
               }
             }
 
             double lane_delta = 0;
             //if(too_close) {
-              if(right_lane_available && r.v_ahead > my_lane.v_ahead) {
+              if(right_lane_available && ((my_lane.has_car_ahead && !r.has_car_ahead ) || (r.v_ahead > my_lane.v_ahead))) {
                 lane_delta = 1;
-              } else if ( left_lane_available && l.v_ahead > my_lane.v_ahead) {
+              } else if ( left_lane_available && ((my_lane.has_car_ahead && !l.has_car_ahead) || (l.v_ahead > my_lane.v_ahead))) {
                 lane_delta = -1;
               }
             //}
@@ -545,6 +554,7 @@ int main() {
                 path.push_back(car_state);
               }
             } else {
+
               // generate trajectory for changing lanes
               double seconds = 2;
               Polynomial trajectory(jerk_minimizing_trajectory({car_state.d,0,0},{car_state.d+4*lane_delta,0,0},seconds));
