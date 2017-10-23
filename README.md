@@ -2,7 +2,12 @@
 Self-Driving Car Engineer Nanodegree Program
 
 
-[![project in simulator](https://img.youtube.com/vi/Sl-rqcI8tUs&t=38s/0.jpg)](https://www.youtube.com/watch?v=Sl-rqcI8tUs&t=38s)
+
+<a href="http://www.youtube.com/watch?feature=player_embedded&v=Sl-rqcI8tUs
+" target="_blank"><img src="http://img.youtube.com/vi/Sl-rqcI8tUs/0.jpg" 
+alt="Project running in simulator" width="240" height="180" border="10" /></a>
+
+[![project in simulator](https://img.youtube.com/vi/Sl-rqcI8tUs/0.jpg)](https://www.youtube.com/watch?v=Sl-rqcI8tUs)
 
 ### Abstract
 This is my implementation of the Udacity Self Driving Car Nanodegree, Term 3 Path Planning Project.
