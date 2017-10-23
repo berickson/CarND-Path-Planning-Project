@@ -1,12 +1,6 @@
 # CarND-Path-Planning-Project - Brian Erickson
 Self-Driving Car Engineer Nanodegree Program
 
-
-
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=Sl-rqcI8tUs
-" target="_blank"><img src="http://img.youtube.com/vi/Sl-rqcI8tUs/0.jpg" 
-alt="Project running in simulator" width="240" height="180" border="10" /></a>
-
 [![project in simulator](https://img.youtube.com/vi/Sl-rqcI8tUs/0.jpg)](https://www.youtube.com/watch?v=Sl-rqcI8tUs)
 
 ### Abstract
